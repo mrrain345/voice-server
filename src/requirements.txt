@@ -1,0 +1,4 @@
+# tortoise-tts
+flask
+waitress
+soundfile

@@ -1,0 +1,6 @@
+[submodule "rvc"]
+	path = rvc
+	url = https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git
+[submodule "tortoise_tts"]
+	path = tortoise_tts
+	url = https://github.com/neonbjb/tortoise-tts.git
