@@ -1,43 +1,44 @@
-import io
 import os
 from time import time
 
-from waitress import serve
-import soundfile as sf
+from utils import singleton
 
 import torch
-import torchaudio
+from typing import Literal
 
 from tortoise_tts.tortoise.api_fast import TextToSpeech, MODELS_DIR
-from tortoise_tts.tortoise.utils.audio import load_voice
+from tortoise_tts.tortoise.utils.audio import load_voice, load_audio
 from tortoise_tts.tortoise.utils.text import split_and_recombine_text
 
-SECRET_KEY = os.environ.get('SECRET_KEY', None)
-TORTOISE_VOICES_DIR = os.environ.get('TORTOISE_VOICES_DIR', '/data/tts_voices')
+import logging
+logger = logging.getLogger(__name__)
 
-class TTS_Model:
-    def __init__(self):
-        if not torch.cuda.is_available():
-            print("!!! No CUDA device found, using CPU !!!")
 
-        use_deepspeed = os.environ.get('USE_DEEPSPEED', 'false').lower() == 'true'
-        if torch.backends.mps.is_available() and use_deepspeed:
-            print("DeepSpeed is not compatible with MPS, disabling it.")
-            use_deepspeed = False
-        print(f"Using DeepSpeed: {use_deepspeed}", flush=True)
+Preset = Literal['ultra_fast', 'fast', 'standard', 'high_quality']
+
+class TTS_Instance:
+    def __init__(self, tts, voice):
+        self.tts = tts
+        self.voice = voice
+        self.samples = []
+
+        files = os.listdir(f"/data/voices/{voice}/samples")
+        for file in files:
+            audio = load_audio(f"/data/voices/{voice}/samples/{file}", 22050)
+            self.samples.append(audio)
+
+        if not self.samples:
+            logger.error(f"No samples found for voice '{voice}'")
+            raise ValueError(f"No samples found for voice '{voice}'")
         
-        self.tts = TextToSpeech(models_dir=MODELS_DIR, use_deepspeed=use_deepspeed, kv_cache=True, half=True)
 
-
-    def infer(self, text, voice, preset='standard', seed=None):
-        audio_stream = self._infer_stream(text, voice, preset, seed)
-        return self._stream_to_np(audio_stream)
-
-
-    def _infer_stream(self, text, voice, preset, seed):
+    def infer(self, text:str, preset:Preset = 'standard', seed:int = None, temperature:float = 0.2):
+        if not text:
+            logger.error("No text specified")
+            raise ValueError("No text specified")
+        
         texts = split_and_recombine_text(text)
         seed = int(time()) if seed is None else seed
-        voice_samples, conditioning_latents = load_voice(voice, [TORTOISE_VOICES_DIR])
 
         presets = {
             'ultra_fast': {'num_autoregressive_samples': 1, 'diffusion_iterations': 10},
@@ -48,30 +49,53 @@ class TTS_Model:
 
         preset_args = presets[preset]
 
-        # Hardcoded preset args for testing purposes
-        # preset_args = {'num_autoregressive_samples': 512, 'diffusion_iterations': 400}
+        def audio_stream():
+            for _text in texts:
+                audio_generator = self.tts.tts_stream(_text, voice_samples=self.samples, use_deterministic_seed=seed, temperature=temperature, **preset_args)
+                for wav_chunk in audio_generator:
+                    yield wav_chunk
 
-        for j, text in enumerate(texts):
-            audio_generator = self.tts.tts_stream(text, voice_samples=voice_samples, use_deterministic_seed=seed, temperature=0.2, **preset_args)
-            for wav_chunk in audio_generator:
-                yield wav_chunk
-
-
-
-    def _stream_to_np(self, audio_stream):
-        audio_tensor = torch.cat(list(audio_stream)).cpu()
-        audio_np = audio_tensor.numpy()
-        return audio_np
-        # torchaudio.save('/data/results/output.mp3', audio_tensor.unsqueeze(0), 24000)
-
-    def _np_to_mp3(self, audio_np):
-        audio_data = io.BytesIO()
-        sf.write(audio_data, audio_np, 24000, format='mp3')
-        audio_data.seek(0)
-        return audio_data
+        audio_tensor = torch.cat(list(audio_stream())).cpu()
+        return audio_tensor.numpy(), 24000
 
 
-# if __name__ == '__main__':
-#     port = os.environ.get('PORT', 6600)
-#     print(f"Running TTS server on port {port}")
-#     serve(app, host="0.0.0.0", port=port)
+@singleton
+class TTS_Model:
+    def __init__(self):
+        logger.info("Initializing TTS_Model")
+        if not torch.cuda.is_available():
+            logger.error("No CUDA device found, using CPU")
+
+        use_deepspeed = os.environ.get('USE_DEEPSPEED', 'false').lower() == 'true'
+        if torch.backends.mps.is_available() and use_deepspeed:
+            logger.warning("DeepSpeed is not compatible with MPS, disabling it.")
+            use_deepspeed = False
+
+        logger.info(f"Using DeepSpeed: {use_deepspeed}")
+
+        self.tts = TextToSpeech(models_dir=MODELS_DIR, use_deepspeed=use_deepspeed, kv_cache=True, half=True)
+        self.voices = {}
+
+
+    def infer(self, voice:str, text:str, preset:Preset = 'standard', seed:int = None, temperature:float = 0.2):
+        tts = self.get_voice(voice)
+        return tts.infer(text, preset, seed, temperature)
+    
+
+    def get_voice(self, voice:str):
+        if not voice:
+            logger.error("No voice specified")
+            raise ValueError("No voice specified")
+
+        if voice in self.voices:
+            return self.voices[voice]
+        
+        logger.info(f"Loading TTS voice '{voice}'")
+
+        if not os.path.exists(f"/data/voices/{voice}"):
+            logger.error(f"Voice '{voice}' does not exist")
+            raise ValueError(f"Voice '{voice}' does not exist")
+        
+        tts = TTS_Instance(self.tts, voice)
+        self.voices[voice] = tts
+        return tts

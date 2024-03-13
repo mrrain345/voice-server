@@ -1,61 +1,29 @@
-import os
-from time import time
+from tts_mod import TTS_Model, Preset
+from rvc_mod import RVC_Model, F0Method
+from utils import base64_url_to_audio
 
-from flask import Flask, request, Response, jsonify
+tts_model = TTS_Model
+rvc_model = RVC_Model
 
-app = Flask(__name__)
-
-SECRET_KEY = os.environ.get('SECRET_KEY', None)
-TORTOISE_VOICES_DIR = os.environ.get('TORTOISE_VOICES_DIR', '/data/tts_voices')
-
-@app.route('/tts/stream', methods=['POST'])
-def api_tts_stream():
-    start_time = time()
-
-    data = request.get_json()
-    voice = data.get('voice')
-    text = data.get('text')
-    preset = data.get('preset', 'standard')
-    seed = data.get('seed', None)
-
-    print(f"POST /tts/stream voice={voice}, preset={preset}, seed={seed}")
-
-    secret = request.headers.get('Authorization', None)
-    if SECRET_KEY and secret != f'Bearer {SECRET_KEY}':
-        print(f"403 Forbidden | Invalid secret key", flush=True)
-        return jsonify({'error': 'Invalid secret key'}), 403
-
-    error = api_validate(voice, text, preset, seed)
-    if error:
-        print(f"400 Bad Request | {error['error']}", flush=True)
-        return jsonify(error), 400
+def tts(voice:str, text:str, preset:Preset = 'standard', seed:int = None, temperature:float = 0.2,
+        use_rvc:bool = True, method:F0Method = "rmvpe", f0up_key:int = 0, index_rate:float = 0.0,
+        filter_radius:int = 3, resample_sr:int = 48000, rms_mix_rate:float = 0.25,
+        protect:float = 0.33):
     
+    tts_audio, tts_sample_rate = tts_model.infer(voice, text, preset, seed, temperature)
 
-    mp3_data = infer(text, voice, preset, seed)
-
-    end_time = time()
-    print(f"200 OK | {end_time - start_time:.2f}s", flush=True)
-    return Response(mp3_data, mimetype='audio/mp3')
-
-
-PRESETS = ['ultra_fast', 'fast', 'standard', 'high_quality']
-
-def api_validate(voice, text, preset, seed):
-    errors = {}
-    voice_dir = os.path.join(TORTOISE_VOICES_DIR, voice)
+    if not use_rvc:
+        return tts_audio, tts_sample_rate
     
-    if not voice:
-        errors['voice'] = 'Field is required'
-    elif not os.path.exists(voice_dir):
-        errors['voice'] = f'Voice "{voice}" does not exist'
-    if text is None:
-        errors['text'] = 'Field is required'
-    if preset not in PRESETS:
-        errors['preset'] = f'Invalid preset value. Allowed values are: {", ".join(PRESETS)}'
-    if seed is not None and not isinstance(seed, int):
-        errors['seed'] = 'Seed must be an integer'
+    rvc_audio, rvc_sample_rate = rvc_model.infer(voice, tts_audio, method, f0up_key, index_rate, filter_radius, resample_sr, rms_mix_rate, protect)
+    return rvc_audio, rvc_sample_rate
+
+
+def convert(voice:str, audio:str, method:F0Method = "rmvpe", f0up_key:int = 0,
+            index_rate:float = 0.0, filter_radius:int = 3, resample_sr:int = 48000,
+            rms_mix_rate:float = 0.25, protect:float = 0.33):
     
-    if errors:
-        return {'error': 'Invalid request body', 'fields': errors}
+    # TODO: Check if decoding works
+    audio_np, sample_rate = base64_url_to_audio(audio)
     
-    return None
+    return rvc_model.infer(voice, audio_np, method, f0up_key, index_rate, filter_radius, resample_sr, rms_mix_rate, protect)
