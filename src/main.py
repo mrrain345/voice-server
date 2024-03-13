@@ -1,8 +1,8 @@
-from tts_rest import infer, tts_infer_stream
-from rvc_main import rvc_infer
+from src.tts_mod import TTS_Model
+from src.rvc_mod import RVC_Model
 
+import io
 import os
-import torch
 import soundfile as sf
 
 def main():
@@ -13,14 +13,21 @@ def main():
     preset = "standard"
     seed = None
 
-    audio_stream = tts_infer_stream(text, voice, preset, seed)
-    audio_tensor = torch.cat(list(audio_stream)).cpu()
-    audio_np = audio_tensor.numpy()
+    tts = TTS_Model()
+    rvc = RVC_Model()
 
-    print(audio_np.shape)
-    sf.write('/data/results/output-tts.mp3', audio_np, 24000, format='mp3')
+    tts_audio = tts.infer(text, voice, preset, seed)
+    sf.write('/data/results/output-tts.mp3', tts_audio, 24000, format='mp3')
 
-    rvc_infer(audio_np)
+    rvc_audio = rvc.infer(voice, tts_audio, f0method="rmvpe")
+    sf.write('/data/results/output-rvc.mp3', rvc_audio, 48000, format='mp3')
+
+
+def audio_to_mp3_stream(audio_stream, sample_rate):
+    audio_data = io.BytesIO()
+    sf.write(audio_data, audio_stream, sample_rate, format='mp3')
+    audio_data.seek(0)
+    return audio_data
 
 if __name__ == "__main__":
     main()

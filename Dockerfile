@@ -37,10 +37,9 @@ RUN pip install -r /app/rvc/requirements.txt
 ADD tortoise_tts /app/tortoise_tts
 RUN pip install -e /app/tortoise_tts
 
-ADD src/requirements.txt /app/src/requirements.txt
-RUN pip install -r /app/src/requirements.txt
+ADD requirements.txt /app/requirements.txt
+RUN pip install -r /app/requirements.txt
 
 ADD src /app/src
 
-WORKDIR /app/rvc
-CMD ["python3", "/app/src/main.py"]
+ENTRYPOINT ["python3", "/app/src/main.py"]
